@@ -184,6 +184,148 @@ static void st(int len, int lo, int hi, double *data, double *result)
     }
 }
 
+/* TODO
+Write these docs for st_spectrogram */
+
+static void st_spectrogram(int len, int width, int height, int lo, int hi, double *data, double *result)
+{
+    int i, k, l2, row, col;
+    double s, *p, a, b;
+    FILE* wisdom;
+    static int planlen = 0;
+    static double *g;
+    static fftw_plan p1, p2;
+    static fftw_complex *h, *H, *G;
+    long long x, y;
+
+    /* Check for frequency defaults. */
+
+    if (lo == 0 && hi == 0) {
+        hi = len / 2;
+    }
+    
+    /* Keep the arrays and plans around from last time, since this
+     is a very common case. Reallocate them if they change. */
+
+    if (len != planlen && planlen > 0) {
+        fftw_destroy_plan(p1);
+        fftw_destroy_plan(p2);
+        fftw_free(h);
+        fftw_free(H);
+        fftw_free(G);
+        free(g);
+        planlen = 0;
+    }
+
+    if (planlen == 0) {
+        planlen = len;
+        h = fftw_malloc(sizeof(fftw_complex) * len);
+        H = fftw_malloc(sizeof(fftw_complex) * len);
+        G = fftw_malloc(sizeof(fftw_complex) * len);
+        g = (double *)malloc(sizeof(double) * len);
+
+        /* Get any accumulated wisdom. */
+        
+        set_wisfile();
+        wisdom = fopen(Wisfile, "r");
+        if (wisdom) {
+            fftw_import_wisdom_from_file(wisdom);
+            fclose(wisdom);
+        }
+
+        /* Set up the fftw plans. */
+
+        p1 = fftw_plan_dft_1d(len, h, H, FFTW_FORWARD, FFTW_MEASURE);
+        p2 = fftw_plan_dft_1d(len, G, h, FFTW_BACKWARD, FFTW_MEASURE);
+
+        /* Save the wisdom. */
+
+        wisdom = fopen(Wisfile, "w");
+        if (wisdom) {
+            fftw_export_wisdom_to_file(wisdom);
+            fclose(wisdom);
+        }
+    }
+
+    /* Convert the input to complex. Also compute the mean. */
+
+    s = 0.;
+    memset(h, 0, sizeof(fftw_complex) * len);
+    for (i = 0; i < len; i++) {
+        h[i][0] = data[i];
+        s += data[i];
+    }
+    s /= len;
+
+    /* FFT. */
+
+    fftw_execute(p1); /* h -> H */
+
+    /* Hilbert transform. The upper half-circle gets multiplied by
+    two, and the lower half-circle gets set to zero. The real axis
+    is left alone. */
+
+    l2 = (len + 1) / 2;
+    for (i = 1; i < l2; i++) {
+        H[i][0] *= 2.;
+        H[i][1] *= 2.;
+    }
+    l2 = len / 2 + 1;
+    for (i = l2; i < len; i++) {
+        H[i][0] = 0.;
+        H[i][1] = 0.;
+    }
+
+    /* Fill in rows of the result. */
+
+    p = result;
+
+    /* The row for lo == 0 contains the mean. */
+
+    /*
+     * row = (y / (height - 1)) * (hi - lo) + lo)
+     *     = (y * hi - y * lo) / (height - 1) + lo
+     */
+
+    for (y = 0; y < height; y++) {
+        row = (y * hi - y * lo) / (height - 1) + lo;
+        if (row == 0) {
+            for (i = 0; i < width; i++) {
+                *p++ = s;
+            }
+            continue;
+        }
+
+        /* Scale the FFT of the gaussian. Negative frequencies
+        wrap around. */
+
+        g[0] = gauss(row, 0);
+        l2 = len / 2 + 1;
+        for (i = 1; i < l2; i++) {
+            g[i] = g[len - i] = gauss(row, i);
+        }
+
+        for (i = 0; i < len; i++) {
+            s = g[i];
+            k = row + i;
+            if (k >= len) k -= len;
+            G[i][0] = H[k][0] * s;
+            G[i][1] = H[k][1] * s;
+        }
+
+        /* Inverse FFT the result to get the next row. */
+
+        fftw_execute(p2); /* G -> h */
+        
+        for (x = 0; x < width; x++) {
+            col = (x * len) / (width - 1);
+            a = h[col][0] / len;
+            b = h[col][1] / len;
+            *p++ = sqrt(a*a + b*b);
+        }
+    }
+}
+
 /* Inverse Stockwell transform. */
 
 static void ist(int len, int lo, int hi, double *data, double *result)
@@ -541,6 +683,52 @@ static PyObject *st_wrap(PyObject *self, PyObject *args)
     return PyArray_Return(r);
 }
 
+static char Doc_st_spectrogram[] =
+"st(x, width, height, [, lo, hi]) returns a 2d spectrogram of the specified\n\
+width and height, generated from the Stockwell transform of the real array x.\n\
+If lo and hi are specified, only those frequencies (rows) are returned; lo\n\
+and hi default to 0 and n/2, resp., where n is the length of x.";
+
+static PyObject *st_spectrogram_wrap(PyObject *self, PyObject *args)
+{
+    int n;
+    int width;
+    int height;
+    int lo = 0;
+    int hi = 0;
+    npy_intp dim[2];
+    PyObject *o;
+    PyArrayObject *a, *r;
+
+    if (!PyArg_ParseTuple(args, "Oii|ii", &o, &width, &height, &lo, &hi)) {
+        return NULL;
+    }
+
+    a = (PyArrayObject *)PyArray_ContiguousFromAny(o, NPY_DOUBLE, 1, 1);
+    if (a == NULL) {
+        return NULL;
+    }
+    n = PyArray_DIM(a, 0);
+
+    if (lo == 0 && hi == 0) {
+        hi = n / 2;
+    }
+    
+    dim[0] = height;
+    dim[1] = width;
+    r = (PyArrayObject *)PyArray_SimpleNew(2, dim, NPY_DOUBLE);
+    if (r == NULL) {
+        Py_DECREF(a);
+        return NULL;
+    }
+
+    st_spectrogram(n, width, height, lo, hi, (double *)PyArray_DATA(a), (double *)PyArray_DATA(r));
+
+    Py_DECREF(a);
+    return PyArray_Return(r);
+}
+
+
 static char Doc_ist[] =
 "ist(y[, lo, hi]) returns the inverse Stockwell transform of the 2d, complex\n\
 array y.";
@@ -692,6 +880,7 @@ Regular FFT, inverse FFT, and Hilbert transforms are also included.";
 
 static PyMethodDef Methods[] = {
     { "st", st_wrap, METH_VARARGS, Doc_st },
+    { "st_spectrogram", st_spectrogram_wrap, METH_VARARGS, Doc_st_spectrogram },
     { "ist", ist_wrap, METH_VARARGS, Doc_ist },
     { "hilbert", hilbert_wrap, METH_VARARGS, Doc_hilbert },
     { "fft", fft_wrap, METH_VARARGS, Doc_fft },

@@ -17,7 +17,7 @@ array y.
 
 
 # import the methods implemented in C
-from st import st, ist, hilbert
+from st import st, ist, hilbert, st_spectrogram
 
 def stfreq(f,length, srate):
 	"""
