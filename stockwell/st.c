@@ -184,8 +184,12 @@ static void st(int len, int lo, int hi, double *data, double *result)
     }
 }
 
-/* TODO
-Write these docs for st_spectrogram */
+/* Stockwell transform implementation for generating spectrograms. The len
+arguement is the number of time points. The lo and hi arguments specify the
+range of frequencies to return. If they are both zero, they default to lo=0
+and hi=len/2. The stockwell transform is sampled at the nearest point for
+each pixel in the spectrogram. The result is returned in the scalar array
+result, which must be preallocated with height rows and width columns. */
 
 static void st_spectrogram(int len, int width, int height, int lo, int hi, double *data, double *result)
 {
@@ -282,13 +286,9 @@ static void st_spectrogram(int len, int width, int height, int lo, int hi, doubl
 
     /* The row for lo == 0 contains the mean. */
 
-    /*
-     * row = (y / (height - 1)) * (hi - lo) + lo)
-     *     = (y * hi - y * lo) / (height - 1) + lo
-     */
-
     for (y = 0; y < height; y++) {
-        row = (y * hi - y * lo) / (height - 1) + lo;
+        row = round((double)(y * hi - y * lo) / (height - 1)) + lo;
+
         if (row == 0) {
             for (i = 0; i < width; i++) {
                 *p++ = s;
@@ -318,7 +318,7 @@ static void st_spectrogram(int len, int width, int height, int lo, int hi, doubl
         fftw_execute(p2); /* G -> h */
         
         for (x = 0; x < width; x++) {
-            col = (x * len) / (width - 1);
+            col = round((double)(x * len) / (width - 1));
             a = h[col][0] / len;
             b = h[col][1] / len;
             *p++ = sqrt(a*a + b*b);
@@ -684,10 +684,10 @@ static PyObject *st_wrap(PyObject *self, PyObject *args)
 }
 
 static char Doc_st_spectrogram[] =
-"st(x, width, height, [, lo, hi]) returns a 2d spectrogram of the specified\n\
-width and height, generated from the Stockwell transform of the real array x.\n\
-If lo and hi are specified, only those frequencies (rows) are returned; lo\n\
-and hi default to 0 and n/2, resp., where n is the length of x.";
+"st_spectrogram(x, width, height, [, lo, hi]) returns a 2d spectrogram of the\n\
+specified width and height, generated from the Stockwell transform of the\n\
+real array x. If lo and hi are specified, only those frequencies (rows) are\n\
+returned; lo and hi default to 0 and n/2, resp., where n is the length of x.";
 
 static PyObject *st_spectrogram_wrap(PyObject *self, PyObject *args)
 {
